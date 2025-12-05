@@ -80,8 +80,8 @@ io.on("connection", (socket) => {
   });
 });
 
-// ✅ CONFIGURABLE PORT
-const PORT = process.env.PORT || 4000;
+// ✅ RAILWAY COMPATIBLE PORT CONFIG
+const PORT = process.env.PORT || 8080;
 
 // SERVER LISTEN
 server.listen(PORT, "0.0.0.0", () => {
