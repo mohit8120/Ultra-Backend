@@ -1,0 +1,23 @@
+{
+  "name": "ultra-backend",
+  "version": "1.0.0",
+  "description": "WebRTC signalling server with random matching",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.6.2",
+    "cors": "^2.8.5",
+    "express": "^4.22.1",
+    "socket.io": "^4.8.1"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.20"
+  },
+  "type": "commonjs"
+}
