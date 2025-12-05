@@ -80,10 +80,13 @@ io.on("connection", (socket) => {
   });
 });
 
+// ✅ CONFIGURABLE PORT
+const PORT = process.env.PORT || 4000;
+
 // SERVER LISTEN
-server.listen(4000, "0.0.0.0", () => {
-  console.log("\n✅ SERVER STARTED ON PORT 4000");
-  console.log("🌐 http://0.0.0.0:4000");
+server.listen(PORT, "0.0.0.0", () => {
+  console.log("\n✅ SERVER STARTED ON PORT " + PORT);
+  console.log("🌐 http://0.0.0.0:" + PORT);
   console.log("✓ Ready to receive events\n");
 });
 
