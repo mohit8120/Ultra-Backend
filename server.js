@@ -113,6 +113,29 @@ io.on("connection", (socket) => {
     tryMatch();
   });
 
+  // ✅ NEW: Handle leave-queue event
+  socket.on("leave-queue", (data) => {
+    console.log("\n❌ LEAVE-QUEUE RECEIVED");
+    console.log("  ├─ UID: " + data.uid);
+    console.log("  ├─ Category: " + data.category);
+    console.log("  └─ Socket: " + socket.id);
+
+    // Remove user from all queues
+    if (data.category === "gay") {
+      queues.gay = queues.gay.filter(u => u.uid !== data.uid);
+      console.log("✓ Removed from GAY queue");
+    } else if (data.category === "lesbian") {
+      queues.lesbian = queues.lesbian.filter(u => u.uid !== data.uid);
+      console.log("✓ Removed from LESBIAN queue");
+    } else if (data.category === "straight") {
+      queues.straight_male = queues.straight_male.filter(u => u.uid !== data.uid);
+      queues.straight_female = queues.straight_female.filter(u => u.uid !== data.uid);
+      console.log("✓ Removed from STRAIGHT queue");
+    }
+
+    printQueueStatus("User left " + data.category);
+  });
+
   socket.on("send-offer", (data) => {
     console.log("\n📤 OFFER RECEIVED");
     console.log("  ├─ From: " + data.from);
