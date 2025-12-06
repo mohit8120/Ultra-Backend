@@ -8,75 +8,131 @@ app.use(cors());
 
 const server = http.createServer(app);
 
-const io = new Server(server, {
-  cors: { origin: "*" }
-});
+const io = new Server(server, { cors: { origin: "*" } });
 
-// simple queue (remove complex categories for now)
+// 🔥 Queue: { uid, gender, category }
 let queue = [];
 
-// uid → socket map
+// uid → socketId
 const userSocket = {};
 
-io.on("connection", socket => {
-  console.log("🔥 Connected:", socket.id);
+// 🚀 MATCHING LOGIC based on category
+function canMatch(u1, u2) {
+  if (u1.uid === u2.uid) return false;
 
-  socket.on("join-queue", ({ uid }) => {
-    userSocket[uid] = socket.id;
+  // Straight category:
+  if (u1.category === "straight" && u2.category === "straight") {
+      return (u1.gender === "male" && u2.gender === "female") ||
+             (u1.gender === "female" && u2.gender === "male");
+  }
 
-    // remove duplicates
-    queue = queue.filter(u => u.uid !== uid);
+  // Gay category:
+  if (u1.category === "gay" && u2.category === "gay") {
+      return u1.gender === "male" && u2.gender === "male";
+  }
 
-    queue.push({ uid });
+  // Lesbian category:
+  if (u1.category === "lesbian" && u2.category === "lesbian") {
+      return u1.gender === "female" && u2.gender === "female";
+  }
 
-    console.log("➕ Added:", uid, " Queue:", queue.length);
+  return false;
+}
 
-    matchUsers();
-  });
+function tryMatch() {
+  if (queue.length < 2) return;
 
-  function matchUsers() {
-    if (queue.length >= 2) {
-      const u1 = queue.shift();
-      const u2 = queue.shift();
+  for (let i = 0; i < queue.length; i++) {
+    for (let j = i + 1; j < queue.length; j++) {
 
-      console.log("💚 MATCH:", u1.uid, "<>", u2.uid);
+      if (canMatch(queue[i], queue[j])) {
+        const u1 = queue[i];
+        const u2 = queue[j];
 
-      io.to(userSocket[u1.uid]).emit("match-found", { peerId: u2.uid });
-      io.to(userSocket[u2.uid]).emit("match-found", { peerId: u1.uid });
+        queue.splice(j, 1);
+        queue.splice(i, 1);
+
+        console.log("💚 MATCH:", u1.uid, "<>", u2.uid);
+
+        io.to(userSocket[u1.uid]).emit("match-found", { peerId: u2.uid });
+        io.to(userSocket[u2.uid]).emit("match-found", { peerId: u1.uid });
+
+        return;
+      }
     }
   }
+}
+
+io.on("connection", (socket) => {
+  console.log("🔥 Connected:", socket.id);
+
+  // JOIN QUEUE
+  socket.on("join-queue", ({ uid, gender, category }) => {
+    userSocket[uid] = socket.id;
+
+    queue = queue.filter((u) => u.uid !== uid);
+
+    queue.push({ uid, gender, category });
+
+    console.log("➕ Added:", uid, "Category:", category, "Gender:", gender);
+    tryMatch();
+  });
+
+  // LEAVE QUEUE
+  socket.on("leave-queue", ({ uid }) => {
+    queue = queue.filter((u) => u.uid !== uid);
+    console.log("🚪 Removed from queue:", uid);
+  });
+
+  // -------------------------
+  // 🔥 CALL ROOM LOGIC FIXED
+  // -------------------------
+  const roomState = {}; // roomName → { users: [], bothReady: false }
 
   socket.on("join-call-room", ({ room, uid }) => {
     userSocket[uid] = socket.id;
     socket.join(room);
 
-    console.log("👥", uid, " joined room", room);
+    if (!roomState[room]) {
+      roomState[room] = { users: [], bothReady: false };
+    }
 
-    setTimeout(() => {
-      socket.to(room).emit("peer-ready", uid);
-    }, 300);
+    roomState[room].users.push(uid);
+
+    console.log("👥", uid, "joined room", room);
+
+    // When both users joined → send peer-ready
+    if (roomState[room].users.length === 2 && !roomState[room].bothReady) {
+      roomState[room].bothReady = true;
+
+      console.log("⚡ Both ready in room:", room);
+
+      // Notify both peers
+      io.to(room).emit("peer-ready", { room });
+    }
   });
 
+  // SIGNALING FIX (EVENT NAMES MATCHED)
   socket.on("send-offer", ({ to, offer }) => {
-    io.to(userSocket[to]).emit("receive-offer", offer);
+    io.to(userSocket[to]).emit("receive-offer", { offer });
   });
 
   socket.on("send-answer", ({ to, answer }) => {
-    io.to(userSocket[to]).emit("receive-answer", answer);
+    io.to(userSocket[to]).emit("receive-answer", { answer });
   });
 
   socket.on("send-ice", ({ to, candidate }) => {
-    io.to(userSocket[to]).emit("receive-ice", candidate);
+    io.to(userSocket[to]).emit("receive-ice", { candidate });
   });
 
+  // DISCONNECT CLEANUP
   socket.on("disconnect", () => {
     for (let uid in userSocket) {
       if (userSocket[uid] === socket.id) {
         delete userSocket[uid];
+        queue = queue.filter((u) => u.uid !== uid);
       }
     }
-
-    queue = queue.filter(u => u.socket !== socket.id);
     console.log("❌ Disconnected:", socket.id);
   });
 });
