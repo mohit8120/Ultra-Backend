@@ -16,6 +16,9 @@ let queue = [];
 // uid → socketId
 const userSocket = {};
 
+// 🔥 Call room state (shared)
+const roomState = {}; // roomName → { users: [], bothReady: false }
+
 // 🚀 MATCHING LOGIC based on category
 function canMatch(u1, u2) {
   if (u1.uid === u2.uid) return false;
@@ -87,8 +90,6 @@ io.on("connection", (socket) => {
   // -------------------------
   // 🔥 CALL ROOM LOGIC FIXED
   // -------------------------
-  const roomState = {}; // roomName → { users: [], bothReady: false }
-
   socket.on("join-call-room", ({ room, uid }) => {
     userSocket[uid] = socket.id;
     socket.join(room);
@@ -121,8 +122,8 @@ io.on("connection", (socket) => {
     io.to(userSocket[to]).emit("receive-answer", { answer });
   });
 
-  socket.on("send-ice", ({ to, candidate }) => {
-    io.to(userSocket[to]).emit("receive-ice", { candidate });
+  socket.on("send-ice", ({ to, candidate, sdpMid, sdpMLineIndex }) => {
+    io.to(userSocket[to]).emit("receive-ice", { candidate, sdpMid, sdpMLineIndex });
   });
 
   // DISCONNECT CLEANUP
