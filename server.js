@@ -9,185 +9,78 @@ app.use(cors());
 const server = http.createServer(app);
 
 const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  },
-  transports: ["websocket", "polling"],
-  allowEIO3: true
+  cors: { origin: "*" }
 });
 
-console.log("🚀 SERVER STARTING...");
+// simple queue (remove complex categories for now)
+let queue = [];
 
-const queues = {
-  gay: [],
-  lesbian: [],
-  straight_male: [],
-  straight_female: []
-};
+// uid → socket map
+const userSocket = {};
 
-function tryMatch() {
-  if (queues.gay.length >= 2) {
-    const user1 = queues.gay.shift();
-    const user2 = queues.gay.shift();
-    matchUsers(user1, user2);
-  }
+io.on("connection", socket => {
+  console.log("🔥 Connected:", socket.id);
 
-  if (queues.lesbian.length >= 2) {
-    const user1 = queues.lesbian.shift();
-    const user2 = queues.lesbian.shift();
-    matchUsers(user1, user2);
-  }
+  socket.on("join-queue", ({ uid }) => {
+    userSocket[uid] = socket.id;
 
-  if (queues.straight_male.length > 0 && queues.straight_female.length > 0) {
-    const male = queues.straight_male.shift();
-    const female = queues.straight_female.shift();
-    matchUsers(male, female);
-  }
-}
+    // remove duplicates
+    queue = queue.filter(u => u.uid !== uid);
 
-function matchUsers(user1, user2) {
-  console.log("\n✅ MATCH FOUND!");
-  console.log("  ├─ User 1: " + user1.uid + " (Socket: " + user1.socket + ")");
-  console.log("  ├─ User 2: " + user2.uid + " (Socket: " + user2.socket + ")");
-  console.log("  └─ Sending match-found to both users");
+    queue.push({ uid });
 
-  io.to(user1.socket).emit("match-found", {
-    peerId: user2.uid,
-    initiator: true
+    console.log("➕ Added:", uid, " Queue:", queue.length);
+
+    matchUsers();
   });
 
-  io.to(user2.socket).emit("match-found", {
-    peerId: user1.uid,
-    initiator: false
-  });
+  function matchUsers() {
+    if (queue.length >= 2) {
+      const u1 = queue.shift();
+      const u2 = queue.shift();
 
-  console.log("✓ Match-found events sent to both users\n");
-}
+      console.log("💚 MATCH:", u1.uid, "<>", u2.uid);
 
-function printQueueStatus(reason = "") {
-  console.log("\n📊 QUEUE STATUS " + (reason ? "(" + reason + ")" : ""));
-  console.log("  ├─ Gay: " + queues.gay.length);
-  console.log("  ├─ Lesbian: " + queues.lesbian.length);
-  console.log("  ├─ Straight Male: " + queues.straight_male.length);
-  console.log("  └─ Straight Female: " + queues.straight_female.length);
-}
-
-io.on("connection", (socket) => {
-  console.log("\n📱 USER CONNECTED");
-  console.log("  ├─ Socket ID: " + socket.id);
-  console.log("  ├─ Total clients: " + io.engine.clientsCount);
-  console.log("  └─ Time: " + new Date().toLocaleTimeString());
-
-  socket.on("join-queue", (data) => {
-    console.log("\n🔔 JOIN-QUEUE RECEIVED");
-    console.log("  ├─ UID: " + data.uid);
-    console.log("  ├─ Gender: " + data.gender);
-    console.log("  ├─ Category: " + data.category);
-    console.log("  └─ Socket: " + socket.id);
-
-    const user = {
-      uid: data.uid,
-      gender: data.gender,
-      category: data.category,
-      socket: socket.id
-    };
-
-    if (data.category === "gay") {
-      queues.gay.push(user);
-      console.log("✓ Added to GAY queue");
-    } else if (data.category === "lesbian") {
-      queues.lesbian.push(user);
-      console.log("✓ Added to LESBIAN queue");
-    } else if (data.category === "straight") {
-      if (data.gender === "male") {
-        queues.straight_male.push(user);
-        console.log("✓ Added MALE to STRAIGHT queue");
-      } else {
-        queues.straight_female.push(user);
-        console.log("✓ Added FEMALE to STRAIGHT queue");
-      }
+      io.to(userSocket[u1.uid]).emit("match-found", { peerId: u2.uid });
+      io.to(userSocket[u2.uid]).emit("match-found", { peerId: u1.uid });
     }
+  }
 
-    printQueueStatus("User joined " + data.category);
-    tryMatch();
+  socket.on("join-call-room", ({ room, uid }) => {
+    userSocket[uid] = socket.id;
+    socket.join(room);
+
+    console.log("👥", uid, " joined room", room);
+
+    setTimeout(() => {
+      socket.to(room).emit("peer-ready", uid);
+    }, 300);
   });
 
-  // ✅ NEW: Handle leave-queue event
-  socket.on("leave-queue", (data) => {
-    console.log("\n❌ LEAVE-QUEUE RECEIVED");
-    console.log("  ├─ UID: " + data.uid);
-    console.log("  ├─ Category: " + data.category);
-    console.log("  └─ Socket: " + socket.id);
-
-    // Remove user from all queues
-    if (data.category === "gay") {
-      queues.gay = queues.gay.filter(u => u.uid !== data.uid);
-      console.log("✓ Removed from GAY queue");
-    } else if (data.category === "lesbian") {
-      queues.lesbian = queues.lesbian.filter(u => u.uid !== data.uid);
-      console.log("✓ Removed from LESBIAN queue");
-    } else if (data.category === "straight") {
-      queues.straight_male = queues.straight_male.filter(u => u.uid !== data.uid);
-      queues.straight_female = queues.straight_female.filter(u => u.uid !== data.uid);
-      console.log("✓ Removed from STRAIGHT queue");
-    }
-
-    printQueueStatus("User left " + data.category);
+  socket.on("send-offer", ({ to, offer }) => {
+    io.to(userSocket[to]).emit("receive-offer", offer);
   });
 
-  socket.on("send-offer", (data) => {
-    console.log("\n📤 OFFER RECEIVED");
-    console.log("  ├─ From: " + data.from);
-    console.log("  ├─ To: " + data.to);
-    console.log("  └─ Offer length: " + data.offer.length + " chars");
-    
-    io.to(data.to).emit("send-offer", data);
+  socket.on("send-answer", ({ to, answer }) => {
+    io.to(userSocket[to]).emit("receive-answer", answer);
   });
 
-  socket.on("send-answer", (data) => {
-    console.log("\n📤 ANSWER RECEIVED");
-    console.log("  ├─ From: " + data.from);
-    console.log("  ├─ To: " + data.to);
-    console.log("  └─ Answer length: " + data.answer.length + " chars");
-    
-    io.to(data.to).emit("send-answer", data);
-  });
-
-  socket.on("send-ice-candidate", (data) => {
-    console.log("\n🧊 ICE CANDIDATE RECEIVED");
-    console.log("  ├─ From: " + data.from);
-    console.log("  ├─ To: " + data.to);
-    
-    io.to(data.to).emit("send-ice-candidate", data);
+  socket.on("send-ice", ({ to, candidate }) => {
+    io.to(userSocket[to]).emit("receive-ice", candidate);
   });
 
   socket.on("disconnect", () => {
-    console.log("\n❌ USER DISCONNECTED");
-    console.log("  ├─ Socket ID: " + socket.id);
-    console.log("  ├─ Total clients now: " + (io.engine.clientsCount - 1));
-    console.log("  └─ Time: " + new Date().toLocaleTimeString());
-
-    for (let category in queues) {
-      queues[category] = queues[category].filter(u => u.socket !== socket.id);
+    for (let uid in userSocket) {
+      if (userSocket[uid] === socket.id) {
+        delete userSocket[uid];
+      }
     }
-    
-    printQueueStatus("User disconnected");
-  });
 
-  socket.on("error", (err) => {
-    console.log("\n⚠️ SOCKET ERROR: " + err);
+    queue = queue.filter(u => u.socket !== socket.id);
+    console.log("❌ Disconnected:", socket.id);
   });
 });
 
-const PORT = process.env.PORT || 8080;
-
-server.listen(PORT, "0.0.0.0", () => {
-  console.log("\n✅ SERVER STARTED ON PORT " + PORT);
-  console.log("🌐 http://0.0.0.0:" + PORT);
-  console.log("✓ Ready to receive events\n");
-});
-
-server.on("error", (err) => {
-  console.log("❌ SERVER ERROR: " + err.message);
+server.listen(8080, () => {
+  console.log("🚀 Server running on 8080");
 });
