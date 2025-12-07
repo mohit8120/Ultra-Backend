@@ -100,7 +100,7 @@ io.on("connection", (socket) => {
   });
 
   // ------------------------------------------------------------
-  // CALL ROOM LOGIC
+  // CALL ROOM LOGIC (FIXED)
   // ------------------------------------------------------------
   socket.on("join-call-room", ({ room, uid }) => {
     userSocket[uid] = socket.id;
@@ -124,6 +124,24 @@ io.on("connection", (socket) => {
     }
   });
 
+  // ⭐ NEW: Handle leaving call room properly
+  socket.on("leave-call-room", ({ room, uid }) => {
+    console.log("🚪", uid, "left room", room);
+    
+    socket.leave(room);
+    
+    // Clean up room state
+    if (roomState[room]) {
+      roomState[room].users = roomState[room].users.filter(u => u !== uid);
+      
+      // If room is empty, delete it completely
+      if (roomState[room].users.length === 0) {
+        delete roomState[room];
+        console.log("🗑️ Room deleted:", room);
+      }
+    }
+  });
+
   // ------------------------------------------------------------
   // SIGNALING RELAY
   // ------------------------------------------------------------
@@ -140,15 +158,38 @@ io.on("connection", (socket) => {
   });
 
   // ------------------------------------------------------------
-  // DISCONNECT CLEANUP
+  // DISCONNECT CLEANUP (ENHANCED)
   // ------------------------------------------------------------
   socket.on("disconnect", () => {
+    // Find which user disconnected
+    let disconnectedUid = null;
     for (const uid in userSocket) {
       if (userSocket[uid] === socket.id) {
+        disconnectedUid = uid;
         delete userSocket[uid];
         queue = queue.filter((u) => u.uid !== uid);
+        break;
       }
     }
+
+    // Clean up ALL rooms this user was in
+    if (disconnectedUid) {
+      for (const room in roomState) {
+        if (roomState[room].users.includes(disconnectedUid)) {
+          roomState[room].users = roomState[room].users.filter(u => u !== disconnectedUid);
+          
+          // Notify the other user that peer disconnected
+          io.to(room).emit("peer-disconnected", { uid: disconnectedUid });
+          
+          // Delete empty rooms
+          if (roomState[room].users.length === 0) {
+            delete roomState[room];
+            console.log("🗑️ Room auto-deleted on disconnect:", room);
+          }
+        }
+      }
+    }
+
     console.log("❌ Disconnected:", socket.id);
   });
 });
