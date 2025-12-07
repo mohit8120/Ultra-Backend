@@ -10,48 +10,57 @@ const server = http.createServer(app);
 
 const io = new Server(server, { cors: { origin: "*" } });
 
-// 🔥 Queue: { uid, gender, category }
-let queue = [];
+// Queue objects
+let queue = []; // { uid, gender, category }
 
-// uid → socketId
+// uid → socketId map
 const userSocket = {};
 
-// 🔥 Call room state (shared)
-const roomState = {}; // roomName → { users: [], bothReady: false }
+// Room state
+const roomState = {}; 
+// room → { users: [], ready: false }
 
-// 🚀 MATCHING LOGIC based on category
+// ------------------------------------------------------------
+// MATCHING RULES
+// ------------------------------------------------------------
 function canMatch(u1, u2) {
+
   if (u1.uid === u2.uid) return false;
+  if (u1.category !== u2.category) return false;
 
-  // Straight category:
-  if (u1.category === "straight" && u2.category === "straight") {
-      return (u1.gender === "male" && u2.gender === "female") ||
-             (u1.gender === "female" && u2.gender === "male");
+  // Straight → male–female only
+  if (u1.category === "straight") {
+    return (
+      (u1.gender === "male" && u2.gender === "female") ||
+      (u1.gender === "female" && u2.gender === "male")
+    );
   }
 
-  // Gay category:
-  if (u1.category === "gay" && u2.category === "gay") {
-      return u1.gender === "male" && u2.gender === "male";
+  // Gay → male–male
+  if (u1.category === "gay") {
+    return u1.gender === "male" && u2.gender === "male";
   }
 
-  // Lesbian category:
-  if (u1.category === "lesbian" && u2.category === "lesbian") {
-      return u1.gender === "female" && u2.gender === "female";
+  // Lesbian → female–female
+  if (u1.category === "lesbian") {
+    return u1.gender === "female" && u2.gender === "female";
   }
 
   return false;
 }
 
+// ------------------------------------------------------------
+// TRY TO MATCH
+// ------------------------------------------------------------
 function tryMatch() {
   if (queue.length < 2) return;
 
   for (let i = 0; i < queue.length; i++) {
     for (let j = i + 1; j < queue.length; j++) {
+      const u1 = queue[i];
+      const u2 = queue[j];
 
-      if (canMatch(queue[i], queue[j])) {
-        const u1 = queue[i];
-        const u2 = queue[j];
-
+      if (canMatch(u1, u2)) {
         queue.splice(j, 1);
         queue.splice(i, 1);
 
@@ -66,6 +75,9 @@ function tryMatch() {
   }
 }
 
+// ------------------------------------------------------------
+// SOCKET EVENTS
+// ------------------------------------------------------------
 io.on("connection", (socket) => {
   console.log("🔥 Connected:", socket.id);
 
@@ -77,43 +89,44 @@ io.on("connection", (socket) => {
 
     queue.push({ uid, gender, category });
 
-    console.log("➕ Added:", uid, "Category:", category, "Gender:", gender);
+    console.log("➕ Added:", uid, category, gender);
     tryMatch();
   });
 
   // LEAVE QUEUE
   socket.on("leave-queue", ({ uid }) => {
     queue = queue.filter((u) => u.uid !== uid);
-    console.log("🚪 Removed from queue:", uid);
+    console.log("🚪 Removed:", uid);
   });
 
-  // -------------------------
-  // 🔥 CALL ROOM LOGIC FIXED
-  // -------------------------
+  // ------------------------------------------------------------
+  // CALL ROOM LOGIC
+  // ------------------------------------------------------------
   socket.on("join-call-room", ({ room, uid }) => {
     userSocket[uid] = socket.id;
     socket.join(room);
 
     if (!roomState[room]) {
-      roomState[room] = { users: [], bothReady: false };
+      roomState[room] = { users: [], ready: false };
     }
 
-    roomState[room].users.push(uid);
+    if (!roomState[room].users.includes(uid)) {
+      roomState[room].users.push(uid);
+    }
 
-    console.log("👥", uid, "joined room", room);
+    console.log("👥", uid, "joined", room);
 
-    // When both users joined → send peer-ready
-    if (roomState[room].users.length === 2 && !roomState[room].bothReady) {
-      roomState[room].bothReady = true;
+    if (roomState[room].users.length === 2 && !roomState[room].ready) {
+      roomState[room].ready = true;
 
       console.log("⚡ Both ready in room:", room);
-
-      // Notify both peers
       io.to(room).emit("peer-ready", { room });
     }
   });
 
-  // SIGNALING FIX (EVENT NAMES MATCHED)
+  // ------------------------------------------------------------
+  // SIGNALING RELAY
+  // ------------------------------------------------------------
   socket.on("send-offer", ({ to, offer }) => {
     io.to(userSocket[to]).emit("receive-offer", { offer });
   });
@@ -126,9 +139,11 @@ io.on("connection", (socket) => {
     io.to(userSocket[to]).emit("receive-ice", { candidate, sdpMid, sdpMLineIndex });
   });
 
+  // ------------------------------------------------------------
   // DISCONNECT CLEANUP
+  // ------------------------------------------------------------
   socket.on("disconnect", () => {
-    for (let uid in userSocket) {
+    for (const uid in userSocket) {
       if (userSocket[uid] === socket.id) {
         delete userSocket[uid];
         queue = queue.filter((u) => u.uid !== uid);
@@ -138,6 +153,8 @@ io.on("connection", (socket) => {
   });
 });
 
-server.listen(8080, () => {
-  console.log("🚀 Server running on 8080");
+const PORT = process.env.PORT || 8080;
+
+server.listen(PORT, () => {
+  console.log("🚀 Server running on " + PORT);
 });
