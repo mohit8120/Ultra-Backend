@@ -146,36 +146,95 @@ exports.cleanupChatWhenBothDeleted = functions.firestore
     }
   });
 
-// Delete old notifications (older than 30 days) - runs daily
-exports.cleanupOldNotifications = functions.pubsub
-  .schedule('every day 02:00')
-  .timeZone('Asia/Kolkata')
-  .onRun(async (context) => {
-    const db = admin.firestore();
-    const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
+// Central cleanup routine used by both Firestore user doc delete and Auth user delete
+async function cleanupUserData(userId) {
+  const db = admin.firestore();
 
-    try {
-      const usersSnap = await db.collection("notifications").get();
-      
-      for (const userDoc of usersSnap.docs) {
-        const userId = userDoc.id;
-        const notificationsSnap = await db
-          .collection("notifications")
-          .doc(userId)
-          .collection("userNotifications")
-          .where("timestamp", "<", thirtyDaysAgo)
-          .get();
+  console.log(`Starting cleanup for deleted user ${userId}`);
 
-        if (!notificationsSnap.empty) {
-          const batch = db.batch();
-          notificationsSnap.forEach(doc => {
-            batch.delete(doc.ref);
-          });
-          await batch.commit();
-          console.log(`Cleaned ${notificationsSnap.size} old notifications for user ${userId}`);
-        }
-      }
-    } catch (error) {
-      console.error("Error cleaning up notifications:", error);
+  // 1) Delete all posts created by the user
+  try {
+    const postsSnap = await db.collection("posts").where("userId", "==", userId).get();
+    if (!postsSnap.empty) {
+      await batchDeleteQuery(postsSnap, db);
+      console.log(`Deleted ${postsSnap.size} top-level posts for user ${userId}`);
+      // onDeletePost will cascade delete comments and notifications for each post
     }
+  } catch (error) {
+    console.error(`Error deleting posts for user ${userId}:`, error);
+  }
+
+  // 2) Delete any user-copy posts under users/{uid}/posts
+  try {
+    const userPostsSnap = await db.collection("users").doc(userId).collection("posts").get();
+    if (!userPostsSnap.empty) {
+      await batchDeleteQuery(userPostsSnap, db);
+      console.log(`Deleted ${userPostsSnap.size} user post copies under users/${userId}/posts`);
+    }
+  } catch (error) {
+    console.error(`Error deleting users/${userId}/posts:`, error);
+  }
+
+  // 3) Delete notifications targeting this user
+  try {
+    const notifTargetSnap = await db.collection("notifications").where("targetUserId", "==", userId).get();
+    if (!notifTargetSnap.empty) {
+      await batchDeleteQuery(notifTargetSnap, db);
+      console.log(`Deleted ${notifTargetSnap.size} notifications targeting user ${userId}`);
+    }
+  } catch (error) {
+    console.error(`Error deleting notifications targeting user ${userId}:`, error);
+  }
+
+  // 4) Delete notifications created by this user
+  try {
+    const notifTriggerSnap = await db.collection("notifications").where("triggeringUserId", "==", userId).get();
+    if (!notifTriggerSnap.empty) {
+      await batchDeleteQuery(notifTriggerSnap, db);
+      console.log(`Deleted ${notifTriggerSnap.size} notifications created by user ${userId}`);
+    }
+  } catch (error) {
+    console.error(`Error deleting notifications triggered by user ${userId}:`, error);
+  }
+
+  // 5) Delete nested notifications under notifications/{uid}/userNotifications
+  try {
+    const nestedNotifsSnap = await db.collection("notifications").doc(userId).collection("userNotifications").get();
+    if (!nestedNotifsSnap.empty) {
+      await batchDeleteQuery(nestedNotifsSnap, db);
+      console.log(`Deleted ${nestedNotifsSnap.size} notifications under notifications/${userId}/userNotifications`);
+    }
+    // Best-effort: remove the container doc
+    await db.collection("notifications").doc(userId).delete().catch(() => {});
+  } catch (error) {
+    console.error(`Error deleting nested notifications for user ${userId}:`, error);
+  }
+
+  // 6) Delete user's inbox entries: inbox/{uid}/conversations/* and the container doc
+  try {
+    const inboxSnap = await db.collection("inbox").doc(userId).collection("conversations").get();
+    if (!inboxSnap.empty) {
+      await batchDeleteQuery(inboxSnap, db);
+      console.log(`Deleted ${inboxSnap.size} inbox conversations for user ${userId}`);
+    }
+    await db.collection("inbox").doc(userId).delete().catch(() => {});
+  } catch (error) {
+    console.error(`Error deleting inbox for user ${userId}:`, error);
+  }
+
+  console.log(`✅ Cleanup completed for deleted user ${userId}`);
+}
+
+// Trigger when the Firestore user document is deleted
+exports.onDeleteUserDoc = functions.firestore
+  .document("users/{userId}")
+  .onDelete(async (snap, context) => {
+    const userId = context.params.userId;
+    await cleanupUserData(userId);
   });
+
+// Trigger when the Firebase Auth user account is deleted
+exports.onAuthUserDelete = functions.auth.user().onDelete(async (user) => {
+  const userId = user.uid;
+  await cleanupUserData(userId);
+});
