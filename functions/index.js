@@ -130,7 +130,7 @@ exports.cleanupChatWhenBothDeleted = functions.firestore
     console.log(`🗑️ Both users deleted chat ${chatId}. Cleaning up…`);
 
     try {
-      // ✅ FIX: Delete messages FIRST, then chat doc (atomic-ish)
+      // Delete all messages in subcollection
       const msgsSnap = await db.collection("chats").doc(chatId).collection("messages").get();
       
       if (!msgsSnap.empty) {
@@ -138,7 +138,7 @@ exports.cleanupChatWhenBothDeleted = functions.firestore
         console.log(`Deleted ${msgsSnap.size} messages from chat ${chatId}`);
       }
 
-      // Delete chat document itself LAST
+      // Delete chat document itself
       await db.collection("chats").doc(chatId).delete();
       console.log(`✅ Chat ${chatId} fully removed from Firestore`);
     } catch (error) {
