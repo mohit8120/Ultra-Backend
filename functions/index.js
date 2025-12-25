@@ -145,3 +145,37 @@ exports.cleanupChatWhenBothDeleted = functions.firestore
       console.error(`Error cleaning up chat ${chatId}:`, error);
     }
   });
+
+// Delete old notifications (older than 30 days) - runs daily
+exports.cleanupOldNotifications = functions.pubsub
+  .schedule('every day 02:00')
+  .timeZone('Asia/Kolkata')
+  .onRun(async (context) => {
+    const db = admin.firestore();
+    const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
+
+    try {
+      const usersSnap = await db.collection("notifications").get();
+      
+      for (const userDoc of usersSnap.docs) {
+        const userId = userDoc.id;
+        const notificationsSnap = await db
+          .collection("notifications")
+          .doc(userId)
+          .collection("userNotifications")
+          .where("timestamp", "<", thirtyDaysAgo)
+          .get();
+
+        if (!notificationsSnap.empty) {
+          const batch = db.batch();
+          notificationsSnap.forEach(doc => {
+            batch.delete(doc.ref);
+          });
+          await batch.commit();
+          console.log(`Cleaned ${notificationsSnap.size} old notifications for user ${userId}`);
+        }
+      }
+    } catch (error) {
+      console.error("Error cleaning up notifications:", error);
+    }
+  });
