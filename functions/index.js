@@ -106,3 +106,43 @@ exports.onDeletePost = functions.firestore
       console.error(`Error deleting notifications for post ${postId}:`, error);
     }
   });
+
+// Deletes all messages between two users when a conversation is deleted from inbox
+exports.onDeleteConversation = functions.firestore
+  .document("inbox/{userId}/conversations/{otherId}")
+  .onDelete(async (snap, context) => {
+    const db = admin.firestore();
+
+    const userId = context.params.userId;
+    const otherId = context.params.otherId;
+
+    console.log(`🗑️ Conversation deleted: ${userId} <-> ${otherId}`);
+
+    try {
+      // Delete all messages where userId sent to otherId
+      const snap1 = await db.collection("chats")
+        .where("senderId", "==", userId)
+        .where("receiverId", "==", otherId)
+        .get();
+
+      if (!snap1.empty) {
+        await batchDeleteQuery(snap1, db);
+        console.log(`Deleted messages from ${userId} to ${otherId}`);
+      }
+
+      // Delete all messages where otherId sent to userId
+      const snap2 = await db.collection("chats")
+        .where("senderId", "==", otherId)
+        .where("receiverId", "==", userId)
+        .get();
+
+      if (!snap2.empty) {
+        await batchDeleteQuery(snap2, db);
+        console.log(`Deleted messages from ${otherId} to ${userId}`);
+      }
+
+      console.log(`✅ All chat messages deleted for conversation: ${userId} <-> ${otherId}`);
+    } catch (error) {
+      console.error(`Error deleting chat messages for ${userId} <-> ${otherId}:`, error);
+    }
+  });
