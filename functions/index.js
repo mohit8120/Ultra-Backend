@@ -107,54 +107,41 @@ exports.onDeletePost = functions.firestore
     }
   });
 
-// Deletes all chat messages only when both users have deleted their conversations from inbox
-exports.onDeleteConversation = functions.firestore
-  .document("inbox/{userId}/conversations/{otherId}")
-  .onDelete(async (snap, context) => {
+// Deletes chat and all messages when both users mark it as deleted
+exports.cleanupChatWhenBothDeleted = functions.firestore
+  .document("chats/{chatId}")
+  .onUpdate(async (change, context) => {
     const db = admin.firestore();
+    const chatId = context.params.chatId;
 
-    const userId = context.params.userId;
-    const otherId = context.params.otherId;
+    const after = change.after.data();
+    if (!after?.deletedFor) return;
 
-    console.log(`🗑️ Conversation deleted by: ${userId}`);
+    const deletedFor = after.deletedFor;
+    const users = Object.keys(deletedFor);
+
+    // Check if both users marked as deleted
+    const allDeleted = users.length >= 2 && users.every(u => deletedFor[u] === true);
+    if (!allDeleted) {
+      console.log(`⏳ Chat ${chatId}: waiting for both users to delete`);
+      return;
+    }
+
+    console.log(`🗑️ Both users deleted chat ${chatId}. Cleaning up…`);
 
     try {
-      // Check if other user's conversation still exists
-      const otherConvRef = db.collection("inbox").doc(otherId).collection("conversations").doc(userId);
-      const otherConvSnap = await otherConvRef.get();
-
-      if (otherConvSnap.exists()) {
-        // Other user hasn't deleted yet, messages stay in Firestore
-        console.log(`⏳ User ${userId} deleted. Waiting for ${otherId} to delete their conversation...`);
-        console.log(`📬 Messages remain in Firestore for ${otherId}`);
-        return;
+      // Delete all messages in subcollection
+      const msgsSnap = await db.collection("chats").doc(chatId).collection("messages").get();
+      
+      if (!msgsSnap.empty) {
+        await batchDeleteQuery(msgsSnap, db);
+        console.log(`Deleted ${msgsSnap.size} messages from chat ${chatId}`);
       }
 
-      // Both users have deleted, now delete all messages from Firestore
-      console.log(`✅ Both users deleted. Clearing all messages between ${userId} <-> ${otherId}`);
-
-      const snap1 = await db.collection("chats")
-        .where("senderId", "==", userId)
-        .where("receiverId", "==", otherId)
-        .get();
-
-      if (!snap1.empty) {
-        await batchDeleteQuery(snap1, db);
-        console.log(`Deleted ${snap1.size} messages from ${userId} to ${otherId}`);
-      }
-
-      const snap2 = await db.collection("chats")
-        .where("senderId", "==", otherId)
-        .where("receiverId", "==", userId)
-        .get();
-
-      if (!snap2.empty) {
-        await batchDeleteQuery(snap2, db);
-        console.log(`Deleted ${snap2.size} messages from ${otherId} to ${userId}`);
-      }
-
-      console.log(`🗑️ All chat messages cleared from Firestore: ${userId} <-> ${otherId}`);
+      // Delete chat document itself
+      await db.collection("chats").doc(chatId).delete();
+      console.log(`✅ Chat ${chatId} fully removed from Firestore`);
     } catch (error) {
-      console.error(`Error deleting chat messages for ${userId} <-> ${otherId}:`, error);
+      console.error(`Error cleaning up chat ${chatId}:`, error);
     }
   });
