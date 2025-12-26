@@ -154,6 +154,25 @@ async function cleanupUserData(userId) {
     console.error(`Error deleting inbox for user ${userId}:`, error);
   }
 
+  // 7) Delete all comments made by this user (on any posts)
+  try {
+    const allPostsSnap = await firestore.collection("posts").get();
+    let deletedCommentsCount = 0;
+    for (const postDoc of allPostsSnap.docs) {
+      const commentsSnap = await firestore.collection("posts").doc(postDoc.id).collection("comments")
+        .where("userId", "==", userId).get();
+      if (!commentsSnap.empty) {
+        await batchDeleteQuery(commentsSnap);
+        deletedCommentsCount += commentsSnap.size;
+      }
+    }
+    if (deletedCommentsCount > 0) {
+      console.log(`Deleted ${deletedCommentsCount} comments made by user ${userId}`);
+    }
+  } catch (error) {
+    console.error(`Error deleting comments for user ${userId}:`, error);
+  }
+
   console.log(`✅ Cleanup completed for deleted user ${userId}`);
 }
 
@@ -182,6 +201,156 @@ app.post("/cleanup/user-delete", async (req, res) => {
     return res.json({ ok: true });
   } catch (e) {
     console.error("Cleanup route error:", e);
+    return res.status(500).json({ error: "Internal error", details: e.message });
+  }
+});
+
+// ------------------------------------------------------------
+// Post expiry cleanup (cron/scheduled job)
+// ------------------------------------------------------------
+app.post("/cleanup/expired-posts", async (req, res) => {
+  try {
+    const now = new Date().getTime();
+    const expiredSnap = await firestore.collection("posts")
+      .where("expiryTimestamp", "<=", now)
+      .get();
+
+    if (expiredSnap.empty) {
+      return res.json({ ok: true, deletedCount: 0 });
+    }
+
+    // Delete expired posts (onDeletePost-like cleanup handled here)
+    for (const doc of expiredSnap.docs) {
+      const post = doc.data() || {};
+      const postId = doc.id;
+
+      // Delete storage files
+      const urls = [post.imageUrl, post.voiceUrl].filter(Boolean);
+      const storagePaths = [post.storagePath].filter(Boolean);
+      try {
+        for (const p of storagePaths) {
+          await bucket.file(p).delete({ ignoreNotFound: true });
+        }
+        for (const url of urls) {
+          const path = storagePathFromUrl(url);
+          if (path) await bucket.file(path).delete({ ignoreNotFound: true });
+        }
+      } catch (err) {
+        console.error(`Error deleting storage for post ${postId}:`, err);
+      }
+
+      // Delete comments under the post
+      try {
+        const commentsSnap = await firestore.collection("posts").doc(postId).collection("comments").get();
+        if (!commentsSnap.empty) await batchDeleteQuery(commentsSnap);
+      } catch (err) {
+        console.error(`Error deleting comments for post ${postId}:`, err);
+      }
+
+      // Delete user copy
+      if (post.userId) {
+        try {
+          await firestore.collection("users").doc(post.userId).collection("posts").doc(postId).delete();
+        } catch (err) {
+          console.error(`Error deleting user copy for post ${postId}:`, err);
+        }
+      }
+    }
+
+    // Delete the expired posts
+    await batchDeleteQuery(expiredSnap);
+
+    // Delete notifications referencing these posts
+    try {
+      for (const doc of expiredSnap.docs) {
+        const notifSnap = await firestore.collection("notifications").where("postId", "==", doc.id).get();
+        if (!notifSnap.empty) await batchDeleteQuery(notifSnap);
+      }
+    } catch (err) {
+      console.error("Error deleting notifications for expired posts:", err);
+    }
+
+    console.log(`🧹 Deleted ${expiredSnap.size} expired posts`);
+    return res.json({ ok: true, deletedCount: expiredSnap.size });
+  } catch (e) {
+    console.error("Expired posts cleanup error:", e);
+    return res.status(500).json({ error: "Internal error", details: e.message });
+  }
+});
+
+// ------------------------------------------------------------
+// Manual post deletion from app
+// ------------------------------------------------------------
+app.post("/cleanup/delete-post", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization || "";
+    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+    if (!token) {
+      return res.status(401).json({ error: "Missing Authorization Bearer token" });
+    }
+
+    const decoded = await admin.auth().verifyIdToken(token);
+    const uidFromToken = decoded.uid;
+    const { postId } = req.body || {};
+    if (!postId) {
+      return res.status(400).json({ error: "Missing postId in request body" });
+    }
+
+    // Verify ownership
+    const postDoc = await firestore.collection("posts").doc(postId).get();
+    if (!postDoc.exists) {
+      return res.status(404).json({ error: "Post not found" });
+    }
+    const post = postDoc.data() || {};
+    if (post.userId !== uidFromToken) {
+      return res.status(403).json({ error: "Not allowed to delete another user's post" });
+    }
+
+    // Delete storage files
+    const urls = [post.imageUrl, post.voiceUrl].filter(Boolean);
+    const storagePaths = [post.storagePath].filter(Boolean);
+    try {
+      for (const p of storagePaths) {
+        await bucket.file(p).delete({ ignoreNotFound: true });
+      }
+      for (const url of urls) {
+        const path = storagePathFromUrl(url);
+        if (path) await bucket.file(path).delete({ ignoreNotFound: true });
+      }
+    } catch (err) {
+      console.error(`Error deleting storage for post ${postId}:`, err);
+    }
+
+    // Delete comments
+    try {
+      const commentsSnap = await firestore.collection("posts").doc(postId).collection("comments").get();
+      if (!commentsSnap.empty) await batchDeleteQuery(commentsSnap);
+    } catch (err) {
+      console.error(`Error deleting comments for post ${postId}:`, err);
+    }
+
+    // Delete user copy
+    try {
+      await firestore.collection("users").doc(uidFromToken).collection("posts").doc(postId).delete();
+    } catch (err) {
+      console.error(`Error deleting user copy for post ${postId}:`, err);
+    }
+
+    // Delete the post
+    await firestore.collection("posts").doc(postId).delete();
+
+    // Delete notifications referencing this post
+    try {
+      const notifSnap = await firestore.collection("notifications").where("postId", "==", postId).get();
+      if (!notifSnap.empty) await batchDeleteQuery(notifSnap);
+    } catch (err) {
+      console.error(`Error deleting notifications for post ${postId}:`, err);
+    }
+
+    console.log(`🗑️ Deleted post ${postId}`);
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error("Delete post route error:", e);
     return res.status(500).json({ error: "Internal error", details: e.message });
   }
 });
