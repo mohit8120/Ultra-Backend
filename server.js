@@ -11,25 +11,11 @@ app.use(express.json());
 // ------------------------------------------------------------
 // Firebase Admin Init (Railway)
 // ------------------------------------------------------------
-try {
-  const saJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-  if (saJson) {
-    const serviceAccount = JSON.parse(saJson);
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
-      storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
-    });
-    console.log("✅ Firebase Admin initialized with service account");
-  } else {
-    admin.initializeApp({
-      credential: admin.credential.applicationDefault(),
-      storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
-    });
-    console.log("✅ Firebase Admin initialized with ADC");
-  }
-} catch (e) {
-  console.error("❌ Firebase Admin init failed:", e);
-}
+admin.initializeApp({
+  credential: admin.credential.applicationDefault(),
+  storageBucket: "camverz.appspot.com",
+});
+console.log("✅ Firebase Admin initialized with ADC");
 
 const firestore = admin.firestore();
 const bucket = admin.storage().bucket();
