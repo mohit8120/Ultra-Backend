@@ -173,6 +173,43 @@ async function cleanupUserData(userId) {
     console.error(`Error deleting comments for user ${userId}:`, error);
   }
 
+  // 8) Mark all chats as deleted for this user
+  try {
+    const chatsSnap = await firestore.collection("chats").get();
+    let markedChatsCount = 0;
+    for (const chatDoc of chatsSnap.docs) {
+      const chatId = chatDoc.id;
+      // Check if this user is part of the chat (chatId format: uid1_uid2)
+      if (chatId.includes(userId)) {
+        const chatData = chatDoc.data() || {};
+        const deletedFor = chatData.deletedFor || {};
+        deletedFor[userId] = true;
+
+        await firestore.collection("chats").doc(chatId).set({ deletedFor }, { merge: true });
+        markedChatsCount++;
+
+        // Check if both users have now deleted
+        const chatUsers = Object.keys(deletedFor);
+        const allDeleted = chatUsers.length >= 2 && chatUsers.every(u => deletedFor[u] === true);
+        if (allDeleted) {
+          // Delete all messages
+          const msgsSnap = await firestore.collection("chats").doc(chatId).collection("messages").get();
+          if (!msgsSnap.empty) {
+            await batchDeleteQuery(msgsSnap);
+          }
+          // Delete chat document
+          await firestore.collection("chats").doc(chatId).delete();
+          console.log(`🗑️ Both users deleted chat ${chatId}, fully removed`);
+        }
+      }
+    }
+    if (markedChatsCount > 0) {
+      console.log(`Marked ${markedChatsCount} chats as deleted for user ${userId}`);
+    }
+  } catch (error) {
+    console.error(`Error marking chats as deleted for user ${userId}:`, error);
+  }
+
   console.log(`✅ Cleanup completed for deleted user ${userId}`);
 }
 
